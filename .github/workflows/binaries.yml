@@ -31,6 +31,8 @@ jobs:
           packages: >
             build-base
             linux-headers
+            openssl-dev
+            openssl-libs-static
 
       - name: Build mosquitto
         env:
