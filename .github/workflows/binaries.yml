@@ -33,6 +33,7 @@ jobs:
             linux-headers
             openssl-dev
             openssl-libs-static
+            cjson-dev
 
       - name: Build mosquitto
         env:
