@@ -1,0 +1,120 @@
+name: binaries
+on:
+  workflow_dispatch:
+
+env:
+  ALPINE_BRANCH: v3.18
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  JOBS: 3
+  LINUX_LDFLAGS: -static
+jobs:
+  mosquitto-multi-linux:
+    name: mosquitto-${{ matrix.MOSQUITTO_VERSION }}-linux-${{ matrix.ARCH }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        MOSQUITTO_VERSION:
+          - 2.0.18
+        ARCH:
+          - x86_64
+    steps:
+      - name: Download mosquitto
+        run: wget https://mosquitto.org/files/source/mosquitto-${{ matrix.MOSQUITTO_VERSION }}.tar.gz
+      - name: Extract mosquitto
+        run: tar xvzf mosquitto-${{ matrix.MOSQUITTO_VERSION }}.tar.gz
+
+      - name: Install Alpine ${{ env.ALPINE_BRANCH }} for ${{ matrix.ARCH }}
+        uses: common-binaries/setup-alpine@v1
+        with:
+          arch: ${{ matrix.ARCH }}
+          branch: ${{ env.ALPINE_BRANCH }}
+          packages: >
+            build-base
+            linux-headers
+
+      - name: Build mosquitto
+        env:
+          LDFLAGS: ${{ env.LINUX_LDFLAGS }}
+        run: |
+          mkdir artifact
+          pwd
+          cd mosquitto-${{ matrix.MOSQUITTO_VERSION }}
+          pwd
+          make
+          mkdir conf
+          cp mosquitto.conf conf/
+          mkdir bin
+          mv src/mosquitto bin/
+          tar cvzf mosquitto-${{ matrix.MOSQUITTO_VERSION }}-linux-${{ matrix.ARCH }}.tar.gz conf/ bin/
+          mv mosquitto-${{ matrix.MOSQUITTO_VERSION }}-linux-${{ matrix.ARCH }}.tar.gz ../artifact/mosquitto-${{ matrix.MOSQUITTO_VERSION }}-linux-${{ matrix.ARCH }}.tar.gz
+        shell: alpine.sh {0}
+
+      - name: Upload mosquitto binary to artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          path: artifact/*
+
+  upload:
+    name: Upload binaries
+    needs:
+      - mosquitto-multi-linux
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    container:
+      image: docker://alpine:3.18
+    steps:
+      - name: Install dependencies
+        run: apk add -U git
+
+      - name: Checkout binaries branch
+        uses: actions/checkout@v3
+        with:
+          ref: binaries
+          path: binaries
+
+      - name: Delete binaries branch
+        working-directory: binaries
+        run: |
+          git checkout --orphan binaries_nouse
+          git branch -d binaries
+          git push https://${GITHUB_ACTOR}:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git --delete binaries
+          rm -fr *
+
+      - name: Create binaries branch
+        working-directory: binaries
+        run: |
+          git checkout --orphan binaries
+
+      - name: Download and unpack all workflow run artifacts
+        uses: actions/download-artifact@v3
+
+      - name: List unpacked artifact files
+        run: ls -lah artifact/
+
+      - name: Move all binaries to the repository
+        run: mv -v artifact/* binaries/
+
+      - name: Check if there are any changes
+        id: has_changes
+        working-directory: binaries
+        run: |
+          git status || exit 1
+          test -n "$(git status --porcelain)" && result=yes || result=no
+          echo "result=$result" >> $GITHUB_OUTPUT
+
+      - name: Commit changes
+        if: steps.has_changes.outputs.result == 'yes'
+        working-directory: binaries
+        run: |
+          git config --local user.email "github-actions@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add --all
+          git commit -m "Built from ${{ github.sha }}"
+
+      - name: Push changes back to origin
+        if: steps.has_changes.outputs.result == 'yes'
+        working-directory: binaries
+        run: |
+          # XXX: workaround for https://github.com/orgs/community/discussions/55820
+          git config --global http.version HTTP/1.1
+          git push https://${GITHUB_ACTOR}:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git binaries
