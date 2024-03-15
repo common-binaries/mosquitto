@@ -1,0 +1,2 @@
+# mosquitto
+mosquitto standalone binaries
